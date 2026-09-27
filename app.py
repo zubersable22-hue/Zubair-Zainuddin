@@ -4,6 +4,9 @@ from flask import Flask, jsonify, send_from_directory, request
 
 app = Flask(__name__, static_folder='.', template_folder='.')
 
+# Determine the absolute directory path of app.py
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
 # Standard Quran Surah Ayah counts mapping
 SURAH_AYAH_COUNTS = {
     1: 7, 2: 286, 3: 200, 4: 176, 5: 120, 6: 165, 7: 206, 8: 75, 9: 129, 10: 109,
@@ -22,11 +25,11 @@ SURAH_AYAH_COUNTS = {
 
 @app.route('/')
 def index():
-    return send_from_directory('.', 'index.html')
+    return send_from_directory(BASE_DIR, 'index.html')
 
 @app.route('/<path:filename>')
 def serve_static(filename):
-    return send_from_directory('.', filename)
+    return send_from_directory(BASE_DIR, filename)
 
 @app.route('/get_ayahs')
 def get_ayahs():
@@ -42,5 +45,5 @@ def get_ayahs():
         return jsonify({"error": "Invalid Surah ID", "ayahs": []}), 400
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8787))
     app.run(host='0.0.0.0', port=port)
