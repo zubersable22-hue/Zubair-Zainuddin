@@ -1,10 +1,9 @@
 import os
 import json
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, send_from_directory, request
 
 app = Flask(__name__, static_folder='.', template_folder='.')
 
-# Standard Quran Surah Ayah counts mapping
 SURAH_AYAH_COUNTS = {
     1: 7, 2: 286, 3: 200, 4: 176, 5: 120, 6: 165, 7: 206, 8: 75, 9: 129, 10: 109,
     11: 123, 12: 111, 13: 43, 14: 52, 15: 99, 16: 128, 17: 111, 18: 110, 19: 98, 20: 135,
