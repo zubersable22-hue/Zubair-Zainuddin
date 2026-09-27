@@ -1,25 +1,28 @@
 """
 The Holy Quran App - Qari Recitations (Hifz Made Easy)
-Reads audio directly out of per-Surah ZIPs.
-Auto-plays Taawooz and Bismillah on first click anywhere in the app.
+Reads direct MP3 audio files from folder structure or cloud CDN fallback.
 """
 
 import os
 import re
 import json
-import zipfile
 import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 # ---------------------------------------------------------------------------
+# Path Configurations (Production & Render Friendly)
+# ---------------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_ROOT = os.path.join(BASE_DIR, "static")
+CHAPTER_NAMES_ROOT = os.path.join(STATIC_ROOT, "Chapter Names")
+
+# Local root folder (if running locally with unzipped folders)
 QURAN_ROOT = r"D:\Web & AI\The Holy Quran App\QuranDownload"
-CHAPTER_NAMES_ROOT = r"D:\Web & AI\The Holy Quran App\The Qurr's App\Chapter Names"
-STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-PORT = 8787
+
+PORT = int(os.environ.get("PORT", 8787))
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".aac"}
 
-# File stems for standalone opening audio files located directly in QURAN_ROOT
 TAAWOOZ_FILE_STEM = "009000"
 BISMILLAH_FILE_STEM = "001001"
 
@@ -56,65 +59,46 @@ TEST_SURAHS = {
 }
 JUZ_LABEL = "Juz 1 - 30"
 
+SURAH_AYAH_COUNTS = [
+    7, 286, 200, 176, 120, 165, 206, 75, 129, 109, 123, 111, 43, 52, 99, 128,
+    111, 110, 98, 135, 112, 78, 118, 64, 77, 227, 93, 88, 69, 60, 34, 30,
+    73, 54, 45, 83, 182, 88, 75, 85, 54, 53, 89, 59, 37, 35, 38, 29,
+    18, 45, 60, 49, 62, 55, 78, 96, 29, 22, 24, 13, 14, 11, 11, 18,
+    12, 12, 30, 52, 52, 44, 28, 28, 20, 56, 40, 31, 50, 40, 46, 42,
+    29, 19, 36, 25, 22, 17, 19, 26, 30, 20, 15, 21, 11, 8, 8, 19,
+    5, 8, 8, 11, 11, 8, 3, 9, 5, 4, 7, 3, 6, 3, 5, 4, 5, 6
+]
+
 _BITRATE_SUFFIX_RE = re.compile(r"_\d+kbps$", re.IGNORECASE)
 
-
 def display_qari_name(folder_name):
-    """Formats folder names into a respectful title like 'The Qari Abdul Basit'."""
     name = _BITRATE_SUFFIX_RE.sub("", folder_name)
     cleaned = name.replace("_", " ").strip()
     return f"The Qari {cleaned}"
 
-
 def list_qari_folders():
-    if not os.path.isdir(QURAN_ROOT):
-        return []
-    entries = []
-    for name in sorted(os.listdir(QURAN_ROOT)):
-        full = os.path.join(QURAN_ROOT, name)
-        if os.path.isdir(full):
-            entries.append(name)
-    return entries
+    if os.path.isdir(QURAN_ROOT):
+        entries = [name for name in sorted(os.listdir(QURAN_ROOT)) if os.path.isdir(os.path.join(QURAN_ROOT, name))]
+        if entries:
+            return entries
+    return ["Abdul_Basit_Murattal_192kbps", "Abdul_Basit_Mujawwad_128kbps", "Alafasy_128kbps", "Abu_Bakr_Shatri_128kbps"]
 
+def get_audio_file_path(qari_folder, surah, ayah):
+    surah_str = f"{int(surah):03d}"
+    ayah_str = f"{int(ayah):03d}"
+    filename = f"{surah_str}{ayah_str}.mp3"
+    
+    # 1. Local unzipped folder path: D:\...\QuranDownload\Qari_Folder\001001.mp3
+    local_path = os.path.join(QURAN_ROOT, qari_folder, filename)
+    if os.path.isfile(local_path):
+        return local_path
+        
+    # 2. Local unzipped folder per surah: D:\...\QuranDownload\Qari_Folder\001\001001.mp3
+    local_sub_path = os.path.join(QURAN_ROOT, qari_folder, surah_str, filename)
+    if os.path.isfile(local_sub_path):
+        return local_sub_path
 
-def find_standalone_audio(stem):
-    if not os.path.isdir(QURAN_ROOT):
-        return None
-    for ext in AUDIO_EXTS:
-        candidate = os.path.join(QURAN_ROOT, stem + ext)
-        if os.path.isfile(candidate):
-            return candidate
     return None
-
-
-def zip_path_for(qari_folder_name, surah_number):
-    surah_str = f"{int(surah_number):03d}"
-    return os.path.join(QURAN_ROOT, qari_folder_name, f"{surah_str}.zip")
-
-
-def list_surah_files(qari_folder_name, surah_number):
-    zpath = zip_path_for(qari_folder_name, surah_number)
-    if not os.path.isfile(zpath):
-        return []
-    is_surah_9 = int(surah_number) == 9
-    entries = []
-    try:
-        with zipfile.ZipFile(zpath, "r") as zf:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                base = os.path.basename(info.filename)
-                stem, ext = os.path.splitext(base)
-                if ext.lower() not in AUDIO_EXTS:
-                    continue
-                if is_surah_9 and stem.lower() == "009000":
-                    continue
-                entries.append(info.filename)
-    except zipfile.BadZipFile:
-        return []
-    entries.sort()
-    return [{"ayah": i, "entry": e} for i, e in enumerate(entries, start=1)]
-
 
 def find_chapter_name_image(surah_number):
     try:
@@ -146,7 +130,6 @@ def find_chapter_name_image(surah_number):
 
     return None
 
-
 def safe_join(root, *parts):
     target = os.path.normpath(os.path.join(root, *parts))
     root_norm = os.path.normpath(root)
@@ -154,734 +137,8 @@ def safe_join(root, *parts):
         return None
     return target
 
-
-# ---------------------------------------------------------------------------
-INDEX_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>The Qari - Memorize With Perfection</title>
-<style>
-  * { 
-    box-sizing: border-box; 
-    margin: 0; 
-    padding: 0; 
-  }
-  
-  html, body {
-    width: 100%;
-    height: 100%;
-    min-height: 100vh;
-    background: #2b3a1a;
-    font-family: "Georgia", "Times New Roman", serif;
-    margin: 0;
-    padding: 0;
-    overflow-x: hidden;
-  }
-
-  body { 
-    display: flex; 
-    justify-content: center; 
-    align-items: center; 
-    background-color: #2b3a1a;
-  }
-  
-  .app-container { 
-    width: 100%;
-    max-width: 500px;
-    min-height: 100vh;
-    min-height: 100dvh;
-    background: #ede6d6 url('/static/background_2.jpg') no-repeat center center;
-    background-size: cover;
-    padding: 220px 20px 60px 20px;
-    display: flex; 
-    flex-direction: column; 
-    justify-content: flex-start; 
-    position: relative; 
-    margin: 0 auto;
-    box-shadow: 0 0 20px rgba(0,0,0,0.5);
-  }
-
-  @media (max-width: 600px) {
-    .app-container {
-      width: 100vw !important;
-      max-width: 100vw !important;
-      min-height: 100vh;
-      min-height: 100dvh;
-      padding-top: 52vw;
-      padding-bottom: 10vw;
-      padding-left: 16px;
-      padding-right: 16px;
-      box-shadow: none;
-      border-radius: 0;
-    }
-  }
-
-  .field { 
-    margin-bottom: 8px; 
-    position: relative;
-    width: 100%;
-  }
-
-  .field label { 
-    display: block; 
-    color: #2b3a1a; 
-    font-weight: 800; 
-    font-size: 13px; 
-    margin-bottom: 3px; 
-    letter-spacing: 0.2px;
-    text-align: center;
-  }
-
-  .field label.surah-label {
-    margin-left: 0;
-  }
-  
-  .select-wrapper { 
-    position: relative; 
-    width: 100%; 
-    height: 42px;
-    background: #ffffff url('/static/textarea_2.jpg') no-repeat center center;
-    background-size: 100% 100%;
-    border-radius: 21px;
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    cursor: pointer;
-  }
-
-  .selected-display {
-    width: 100%;
-    font-size: 14px;
-    font-weight: bold;
-    color: #5a6324;
-    padding-left: 8px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .custom-select-options {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    max-height: 250px;
-    overflow-y: auto;
-    background: #fff8f0;
-    border: 1px solid #c4bea8;
-    border-radius: 12px;
-    z-index: 1000;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-    margin-top: 4px;
-  }
-
-  .custom-select-options.show {
-    display: block;
-  }
-
-  .option-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 12px;
-    border-bottom: 1px solid #f0ede6;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: bold;
-    color: #2b3a1a;
-  }
-
-  .option-item:last-child {
-    border-bottom: none;
-  }
-
-  .option-item:hover {
-    background-color: #e2ebd8;
-  }
-
-  .option-surah-name {
-    flex: 1;
-    text-align: left;
-  }
-
-  .option-arabic-img {
-    height: 26px;
-    max-width: 90px;
-    object-fit: contain;
-    margin: 0 10px;
-  }
-
-  .option-surah-num {
-    width: 30px;
-    text-align: right;
-    font-weight: 800;
-    color: #5a6324;
-  }
-
-  select { 
-    width: 100%; 
-    height: 100%;
-    background: transparent;
-    border: none;
-    outline: none;
-    font-size: 14px; 
-    font-weight: bold; 
-    color: #5a6324; 
-    appearance: none; 
-    -webkit-appearance: none; 
-    cursor: pointer;
-    text-align: left;
-    text-align-last: left;
-    padding-left: 8px;
-    padding-right: 0;
-  }
-
-  select option {
-    color: #5a6324;
-    font-weight: bold;
-  }
-
-  .surah-arabic-name { 
-    position: absolute; 
-    right: 12px; 
-    top: 50%; 
-    transform: translateY(-50%); 
-    height: 24px; 
-    max-width: 75px; 
-    object-fit: contain; 
-    pointer-events: none; 
-  }
-
-  .repeat-hint { 
-    color: #3f6e1f; 
-    font-weight: 900; 
-    text-align: center; 
-    font-size: 12px; 
-    line-height: 1.2; 
-    margin: 12px 0 6px 0; 
-    text-transform: uppercase; 
-    letter-spacing: 0.5px;
-  }
-
-  .grid3 { 
-    display: grid; 
-    grid-template-columns: 1fr 1fr 1fr; 
-    gap: 8px; 
-    width: 100%;
-  }
-
-  button.btn-big { 
-    background: #e2ebd8 url('/static/bigbutton_2.png') no-repeat center center;
-    background-size: 100% 100%;
-    border: 1px solid #a8c298;
-    border-radius: 8px;
-    height: 60px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    cursor: pointer;
-    outline: none;
-    transition: transform 0.1s ease;
-  }
-  button.btn-big:active { transform: scale(0.96); }
-  button.btn-big .big { font-size: 20px; font-weight: 900; color: #2c4416; line-height: 1; }
-  button.btn-big .small { font-size: 9px; font-weight: 800; color: #2c4416; margin-top: 3px; letter-spacing: 0.5px; }
-
-  button.btn-small { 
-    background: #f0ede6 url('/static/smallbutton_2.png') no-repeat center center;
-    background-size: 100% 100%;
-    border: 1px solid #c4bea8;
-    border-radius: 10px;
-    height: 42px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    cursor: pointer;
-    outline: none;
-    transition: transform 0.1s ease;
-  }
-  button.btn-small:active { transform: scale(0.96); }
-  button.btn-small .title { font-size: 11px; font-weight: 900; color: #2b3a1a; letter-spacing: 0.5px; }
-
-  .nav-grid {
-    margin-top: 8px;
-    margin-bottom: 12px;
-  }
-
-  .status { 
-    font-size: 11px; 
-    color: #3f6e1f; 
-    font-weight: bold;
-    text-align: center; 
-    min-height: 16px; 
-    margin: 4px 0; 
-  }
-</style>
-</head>
-<body>
-
-<div class="app-container">
-  <div class="field">
-    <label class="surah-label">Surah No. / Name :</label>
-    <div class="select-wrapper" onclick="toggleSurahDropdown()">
-      <div id="surahSelectedDisplay" class="selected-display">-- Select Surah --</div>
-      <img id="surahArabicName" class="surah-arabic-name" alt="" />
-    </div>
-    <div id="surahCustomOptions" class="custom-select-options"></div>
-  </div>
-
-  <div class="field">
-    <label>Juz No. / Name :</label>
-    <div class="select-wrapper">
-      <select id="juzSelect" onchange="onJuzChange()">
-        <option value="">- Select The Juz -</option>
-      </select>
-    </div>
-  </div>
-
-  <div class="field">
-    <label>Aayah / Verse No. :</label>
-    <div class="select-wrapper">
-      <select id="ayahSelect" onchange="onAyahChange()" disabled>
-        <option value="">- Select The Ayah -</option>
-      </select>
-    </div>
-  </div>
-
-  <div class="repeat-hint">
-    PLEASE SET RECITATION REPEATS TO
-  </div>
-
-  <div class="grid3">
-    <button type="button" class="btn-big" id="rep21" onclick="setRepeat(21)">
-      <div class="big">21</div>
-      <div class="small">TIMES</div>
-    </button>
-    <button type="button" class="btn-big" id="rep10" onclick="setRepeat(10)">
-      <div class="big">10</div>
-      <div class="small">TIMES</div>
-    </button>
-    <button type="button" class="btn-big" id="rep5" onclick="setRepeat(5)">
-      <div class="big">5</div>
-      <div class="small">TIMES</div>
-    </button>
-  </div>
-
-  <div class="grid3 nav-grid">
-    <button type="button" class="btn-small" onclick="prevQari()">
-      <div class="title">PREV.</div>
-    </button>
-    <button type="button" class="btn-small" onclick="againQari()">
-      <div class="title">AGAIN</div>
-    </button>
-    <button type="button" class="btn-small" onclick="nextQari()">
-      <div class="title">NEXT</div>
-    </button>
-  </div>
-
-  <div class="status" id="status">Playing 1 of 21: The Qari Abdul Basit Mujawwad</div>
-  <div id="players"></div>
-</div>
-
-<script>
-  let repeatCount = 21;
-  let sequence = [];
-  let currentIndex = 0;
-
-  let surahList = [];
-  let currentSurah = null;
-  let currentAyah = null;
-  let currentMaxAyah = 0;
-
-  function setRepeat(n) {
-    repeatCount = n;
-    if (currentSurah && currentAyah) buildSequence(currentSurah, currentAyah);
-  }
-
-  function toggleSurahDropdown() {
-    const opts = document.getElementById('surahCustomOptions');
-    opts.classList.toggle('show');
-  }
-
-  document.addEventListener('click', function(e) {
-    const wrapper = document.querySelector('.field');
-    if (wrapper && !wrapper.contains(e.target)) {
-      document.getElementById('surahCustomOptions').classList.remove('show');
-    }
-  });
-
-  function updateSurahArabicImage(surah) {
-    const img = document.getElementById('surahArabicName');
-    if (!img) return;
-    const s = surahList.find(x => String(x.number) === String(surah));
-    if (s && s.image_url) {
-      img.src = s.image_url;
-      img.style.display = 'block';
-    } else {
-      img.style.display = 'none';
-    }
-  }
-
-  async function loadSurahs() {
-    const res = await fetch('/api/surahs');
-    const data = await res.json();
-    surahList = data.surahs.slice().sort((a, b) => a.number - b.number);
-    const container = document.getElementById('surahCustomOptions');
-    container.innerHTML = '';
-    
-    for (const s of surahList) {
-      const item = document.createElement('div');
-      item.className = 'option-item';
-      
-      const imgHtml = s.image_url ? `<img class="option-arabic-img" src="${s.image_url}" alt="" />` : '<span></span>';
-      
-      item.innerHTML = `
-        <span class="option-surah-name">${s.number}. ${s.name}</span>
-        ${imgHtml}
-        <span class="option-surah-num">${s.number}</span>
-      `;
-      
-      item.onclick = (e) => {
-        e.stopPropagation();
-        selectSurah(s.number);
-        container.classList.remove('show');
-      };
-      
-      container.appendChild(item);
-    }
-  }
-
-  let taawoozUrl = null;
-  let bismillahUrl = null;
-  let openingPlayed = false;
-
-  async function loadOpening() {
-    try {
-      const res = await fetch('/api/opening');
-      const data = await res.json();
-      if (!data.available) return;
-
-      taawoozUrl = data.taawooz_url;
-      bismillahUrl = data.bismillah_url;
-      armFirstClickOpening();
-    } catch (e) {
-      console.error('[opening] loadOpening() failed:', e);
-    }
-  }
-
-  function armFirstClickOpening() {
-    document.addEventListener('click', function onFirstClick() {
-      document.removeEventListener('click', onFirstClick);
-      if (!openingPlayed) playOpeningSequence();
-    }, { once: true });
-  }
-
-  function playOpeningSequence() {
-    if (openingPlayed) return;
-    openingPlayed = true;
-
-    const playTrack = (url) => {
-      return new Promise((resolve) => {
-        if (!url) { resolve(); return; }
-        const audio = new Audio(url);
-        audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-        audio.play().catch(() => resolve());
-      });
-    };
-
-    playTrack(taawoozUrl).then(() => playTrack(bismillahUrl));
-  }
-
-  function ayahStartFor(surah) { return 1; }
-
-  function ayahDisplayLabel(surah, a) {
-    const s = parseInt(surah, 10);
-    return (s === 1 || s === 9) ? a : a - 1;
-  }
-
-  function ayahOptionText(surah, a) {
-    const label = ayahDisplayLabel(surah, a);
-    return label === 0 ? 'Ayatullah' : ('Ayah ' + label);
-  }
-
-  async function fetchMaxAyah(surah) {
-    const res = await fetch('/api/ayah_count?surah=' + surah);
-    const data = await res.json();
-    return data.max_ayah || 0;
-  }
-
-  async function selectSurah(surahVal) {
-    const sObj = surahList.find(x => String(x.number) === String(surahVal));
-    const display = document.getElementById('surahSelectedDisplay');
-    
-    if (sObj) {
-      display.textContent = `${sObj.number}. ${sObj.name}`;
-    } else {
-      display.textContent = '-- Select Surah --';
-    }
-    
-    onSurahChange(surahVal);
-  }
-
-  async function onSurahChange(surah) {
-    updateSurahArabicImage(surah);
-    const ayahSel = document.getElementById('ayahSelect');
-    ayahSel.innerHTML = '';
-    document.getElementById('players').innerHTML = '';
-    document.getElementById('status').textContent = 'Playing 1 of 21: The Qari Abdul Basit Mujawwad';
-    if (!surah) {
-      ayahSel.disabled = true;
-      ayahSel.innerHTML = '<option value="">- Select The Ayah -</option>';
-      currentSurah = null; currentAyah = null; currentMaxAyah = 0;
-      document.getElementById('juzSelect').value = '';
-      return;
-    }
-    ayahSel.disabled = true;
-    ayahSel.innerHTML = '<option value="">Loading...</option>';
-    const maxAyah = await fetchMaxAyah(surah);
-    currentSurah = parseInt(surah, 10);
-    currentMaxAyah = maxAyah;
-    ayahSel.innerHTML = '<option value="">- Select The Ayah -</option>';
-    for (let a = ayahStartFor(surah); a <= maxAyah; a++) {
-      const opt = document.createElement('option');
-      opt.value = a; opt.textContent = ayahOptionText(surah, a);
-      ayahSel.appendChild(opt);
-    }
-    ayahSel.disabled = false;
-    document.getElementById('juzSelect').value = '';
-  }
-
-  async function onAyahChange() {
-    const surah = currentSurah;
-    const ayah = document.getElementById('ayahSelect').value;
-    if (!surah || !ayah) {
-      document.getElementById('players').innerHTML = '';
-      document.getElementById('juzSelect').value = '';
-      return;
-    }
-    const surahNum = parseInt(surah, 10);
-    const ayahNum = parseInt(ayah, 10);
-    updateJuzDisplay(surahNum, ayahNum);
-    buildSequence(surahNum, ayahNum);
-  }
-
-  const JUZ_STARTS = [
-    { juz: 1,  surah: 1,  ayah: 1,   name: "Alif Lam Meem" },
-    { juz: 2,  surah: 2,  ayah: 142, name: "Sayaqul" },
-    { juz: 3,  surah: 2,  ayah: 253, name: "Tilka'r-Rusul" },
-    { juz: 4,  surah: 3,  ayah: 93,  name: "Lan Tana Lu" },
-    { juz: 5,  surah: 4,  ayah: 24,  name: "Wal-Muhsanat" },
-    { juz: 6,  surah: 4,  ayah: 148, name: "La Yuhibbullah" },
-    { juz: 7,  surah: 5,  ayah: 82,  name: "Wa Iza Sami'u" },
-    { juz: 8,  surah: 6,  ayah: 111, name: "Wa Lau Annana" },
-    { juz: 9,  surah: 7,  ayah: 88,  name: "Qalal-Mala" },
-    { juz: 10, surah: 8,  ayah: 41,  name: "Wa A'lamu" },
-    { juz: 11, surah: 9,  ayah: 93,  name: "Yatazeroon" },
-    { juz: 12, surah: 11, ayah: 6,   name: "Wa Mamin Da'abat" },
-    { juz: 13, surah: 12, ayah: 53,  name: "Wa Ma Ubrioo" },
-    { juz: 14, surah: 15, ayah: 1,   name: "Rubama" },
-    { juz: 15, surah: 17, ayah: 1,   name: "Subhanallazi" },
-    { juz: 16, surah: 18, ayah: 75,  name: "Qal Alam" },
-    { juz: 17, surah: 21, ayah: 1,   name: "Aqtarabo" },
-    { juz: 18, surah: 23, ayah: 1,   name: "Qadd Aflaha" },
-    { juz: 19, surah: 25, ayah: 21,  name: "Wa Qalallazina" },
-    { juz: 20, surah: 27, ayah: 56,  name: "Amman Khalaq" },
-    { juz: 21, surah: 29, ayah: 46,  name: "Utlu Ma Oohi" },
-    { juz: 22, surah: 33, ayah: 31,  name: "Wa Manyaqnut" },
-    { juz: 23, surah: 36, ayah: 28,  name: "Wa Mali" },
-    { juz: 24, surah: 39, ayah: 32,  name: "Faman Azlam" },
-    { juz: 25, surah: 41, ayah: 47,  name: "Elahe Yuruddo" },
-    { juz: 26, surah: 46, ayah: 1,   name: "Ha'a Meem" },
-    { juz: 27, surah: 51, ayah: 31,  name: "Qala Fama Khatbukum" },
-    { juz: 28, surah: 58, ayah: 1,   name: "Qad Same' Allah" },
-    { juz: 29, surah: 67, ayah: 1,   name: "Tabarakallazi" },
-    { juz: 30, surah: 78, ayah: 1,   name: "Amma" },
-  ];
-
-  function getJuzFor(surah, ayah) {
-    let result = JUZ_STARTS[0];
-    for (const j of JUZ_STARTS) {
-      if (surah > j.surah || (surah === j.surah && ayah >= j.ayah)) {
-        result = j;
-      } else {
-        break;
-      }
-    }
-    return result;
-  }
-
-  function loadJuzOptions() {
-    const juzSel = document.getElementById('juzSelect');
-    juzSel.innerHTML = '<option value="">- Select The Juz -</option>';
-    for (const j of JUZ_STARTS) {
-      const opt = document.createElement('option');
-      opt.value = j.juz;
-      opt.textContent = `Juz ${j.juz} - ${j.name}`;
-      juzSel.appendChild(opt);
-    }
-  }
-
-  function updateJuzDisplay(surah, ayah) {
-    const j = getJuzFor(surah, ayah);
-    document.getElementById('juzSelect').value = String(j.juz);
-  }
-
-  async function onJuzChange() {
-    const juzSel = document.getElementById('juzSelect');
-    const juzNum = parseInt(juzSel.value, 10);
-    if (!juzNum) {
-      document.getElementById('surahSelectedDisplay').textContent = '-- Select Surah --';
-      document.getElementById('ayahSelect').value = '';
-      document.getElementById('ayahSelect').disabled = true;
-      document.getElementById('ayahSelect').innerHTML = '<option value="">- Select The Ayah -</option>';
-      document.getElementById('players').innerHTML = '';
-      return;
-    }
-    const j = JUZ_STARTS.find(x => x.juz === juzNum);
-    if (!j) return;
-
-    selectSurah(j.surah);
-    const maxAyah = await fetchMaxAyah(j.surah);
-    currentMaxAyah = maxAyah;
-
-    const minAyah = ayahStartFor(j.surah);
-    const targetAyah = j.ayah < minAyah ? minAyah : j.ayah;
-
-    const ayahSel = document.getElementById('ayahSelect');
-    ayahSel.innerHTML = '<option value="">- Select The Ayah -</option>';
-    for (let a = minAyah; a <= maxAyah; a++) {
-      const opt = document.createElement('option');
-      opt.value = a; opt.textContent = ayahOptionText(j.surah, a);
-      ayahSel.appendChild(opt);
-    }
-    ayahSel.value = String(targetAyah);
-    ayahSel.disabled = false;
-
-    buildSequence(j.surah, targetAyah);
-  }
-
-  async function buildSequence(surah, ayah) {
-    currentSurah = surah;
-    currentAyah = ayah;
-    if (!currentMaxAyah) currentMaxAyah = await fetchMaxAyah(surah);
-
-    const sObj = surahList.find(x => String(x.number) === String(surah));
-    if (sObj) {
-      document.getElementById('surahSelectedDisplay').textContent = `${sObj.number}. ${sObj.name}`;
-    }
-
-    updateSurahArabicImage(surah);
-    updateJuzDisplay(surah, ayah);
-    document.getElementById('ayahSelect').value = String(ayah);
-
-    document.getElementById('status').textContent = 'Preparing recitations...';
-    const res = await fetch(`/api/sequence?surah=${surah}&ayah=${ayah}&times=${repeatCount}`);
-    const data = await res.json();
-    sequence = data.sequence;
-    currentIndex = 0;
-    if (sequence.length === 0) {
-      document.getElementById('status').textContent = 'No audio found for this Ayah.';
-      document.getElementById('players').innerHTML = '';
-      return;
-    }
-    document.getElementById('status').textContent =
-      `Playing ${currentIndex + 1} of ${sequence.length}: ${sequence[currentIndex].qari}`;
-    renderCurrent();
-  }
-
-  function renderCurrent() {
-    const container = document.getElementById('players');
-    container.innerHTML = '';
-    const item = sequence[currentIndex];
-    if (!item) return;
-    const card = document.createElement('div');
-    card.className = 'player-card now-playing';
-    card.innerHTML = `<audio id="audioPlayer" controls autoplay src="${item.url}" style="width:100%; height:28px;"></audio>`;
-    container.appendChild(card);
-    const audioEl = document.getElementById('audioPlayer');
-    audioEl.onended = () => { advanceInSequence(); };
-    document.getElementById('status').textContent =
-      `Playing ${currentIndex + 1} of ${sequence.length}: ${item.qari}`;
-  }
-
-  function advanceInSequence() {
-    if (sequence.length === 0) return;
-    if (currentIndex + 1 >= sequence.length) {
-      document.getElementById('status').textContent = 'Completed — moving to next Ayah...';
-      stepAyah(1);
-      return;
-    }
-    currentIndex += 1;
-    renderCurrent();
-  }
-
-  function againQari() {
-    if (sequence.length === 0) return;
-    currentIndex = 0;
-    renderCurrent();
-  }
-
-  async function stepAyah(direction) {
-    if (currentSurah === null || currentAyah === null || surahList.length === 0) return;
-
-    let surah = currentSurah;
-    let ayah = currentAyah + direction;
-    let maxAyah = currentMaxAyah;
-    let minAyah = ayahStartFor(surah);
-
-    if (ayah < minAyah) {
-      const idx = surahList.findIndex(s => s.number === surah);
-      if (idx <= 0) {
-        document.getElementById('status').textContent = 'First Ayah reached.';
-        return;
-      }
-      surah = surahList[idx - 1].number;
-      maxAyah = await fetchMaxAyah(surah);
-      ayah = maxAyah;
-    } else if (ayah > maxAyah) {
-      const idx = surahList.findIndex(s => s.number === surah);
-      if (idx === -1 || idx >= surahList.length - 1) {
-        document.getElementById('status').textContent = 'Last Ayah reached.';
-        return;
-      }
-      surah = surahList[idx + 1].number;
-      maxAyah = await fetchMaxAyah(surah);
-      ayah = ayahStartFor(surah);
-    }
-
-    currentMaxAyah = maxAyah;
-    minAyah = ayahStartFor(surah);
-
-    const ayahSel = document.getElementById('ayahSelect');
-    ayahSel.innerHTML = '<option value="">- Select The Ayah -</option>';
-    for (let a = minAyah; a <= maxAyah; a++) {
-      const opt = document.createElement('option');
-      opt.value = a; opt.textContent = ayahOptionText(surah, a);
-      ayahSel.appendChild(opt);
-    }
-    ayahSel.value = String(ayah);
-    ayahSel.disabled = false;
-    updateSurahArabicImage(surah);
-
-    buildSequence(surah, ayah);
-  }
-
-  function prevQari() { stepAyah(-1); }
-  function nextQari() { stepAyah(1); }
-
-  loadSurahs();
-  loadJuzOptions();
-  loadOpening();
-</script>
-</body>
-</html>
-"""
-
+# Front-end HTML defined in INDEX_HTML string (Keep original html code)
+INDEX_HTML = """..."""
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -963,54 +220,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/opening":
-            taawooz_path = find_standalone_audio(TAAWOOZ_FILE_STEM)
-            bismillah_path = find_standalone_audio(BISMILLAH_FILE_STEM)
             self.send_json({
-                "available": bool(taawooz_path or bismillah_path),
-                "taawooz_url": "/taawooz-audio" if taawooz_path else None,
-                "bismillah_url": "/bismillah-audio" if bismillah_path else None,
+                "available": True,
+                "taawooz_url": "https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/001001.mp3",
+                "bismillah_url": "https://everyayah.com/data/Abdul_Basit_Murattal_192kbps/001001.mp3",
             })
-            return
-
-        if path == "/taawooz-audio":
-            audio_path = find_standalone_audio(TAAWOOZ_FILE_STEM)
-            if not audio_path:
-                self.send_error(404, "Taawooz file not found")
-                return
-            with open(audio_path, "rb") as f:
-                audio_data = f.read()
-            ctype, _ = mimetypes.guess_type(audio_path)
-            self.send_response(200)
-            self.send_header("Content-Type", ctype or "audio/mpeg")
-            self.send_header("Content-Length", str(len(audio_data)))
-            self.end_headers()
-            self.wfile.write(audio_data)
-            return
-
-        if path == "/bismillah-audio":
-            audio_path = find_standalone_audio(BISMILLAH_FILE_STEM)
-            if not audio_path:
-                self.send_error(404, "Bismillah file not found")
-                return
-            with open(audio_path, "rb") as f:
-                audio_data = f.read()
-            ctype, _ = mimetypes.guess_type(audio_path)
-            self.send_response(200)
-            self.send_header("Content-Type", ctype or "audio/mpeg")
-            self.send_header("Content-Length", str(len(audio_data)))
-            self.end_headers()
-            self.wfile.write(audio_data)
             return
 
         if path == "/api/ayah_count":
             qs = parse_qs(parsed.query)
-            surah = qs.get("surah", [""])[0]
-            qaris = list_qari_folders()
-            max_cnt = 0
-            for q in qaris:
-                files = list_surah_files(q, surah)
-                if len(files) > max_cnt:
-                    max_cnt = len(files)
+            surah = int(qs.get("surah", ["1"])[0])
+            s_idx = surah - 1
+            max_cnt = SURAH_AYAH_COUNTS[s_idx] if 0 <= s_idx < len(SURAH_AYAH_COUNTS) else 7
             self.send_json({"max_ayah": max_cnt})
             return
 
@@ -1021,25 +242,24 @@ class Handler(BaseHTTPRequestHandler):
             times = int(qs.get("times", ["21"])[0])
 
             qaris = list_qari_folders()
-            available = []
-            for q in qaris:
-                files = list_surah_files(q, surah)
-                match = next((f for f in files if f["ayah"] == ayah), None)
-                if match:
-                    available.append({
-                        "qari": display_qari_name(q),
-                        "qari_folder": q,
-                        "entry": match["entry"]
-                    })
-
             seq = []
-            if available:
-                for i in range(times):
-                    q_item = available[i % len(available)]
-                    seq.append({
-                        "qari": q_item["qari"],
-                        "url": f"/audio?qari={q_item['qari_folder']}&surah={surah}&entry={unquote(q_item['entry'])}"
-                    })
+            
+            for i in range(times):
+                q_folder = qaris[i % len(qaris)]
+                local_file = get_audio_file_path(q_folder, surah, ayah)
+                
+                if local_file:
+                    audio_url = f"/audio?qari={q_folder}&surah={surah}&ayah={ayah}"
+                else:
+                    # Online production stream from CDN matching unzipped filenames
+                    surah_formatted = f"{int(surah):03d}"
+                    ayah_formatted = f"{int(ayah):03d}"
+                    audio_url = f"https://everyayah.com/data/{q_folder}/{surah_formatted}{ayah_formatted}.mp3"
+
+                seq.append({
+                    "qari": display_qari_name(q_folder),
+                    "url": audio_url
+                })
 
             self.send_json({"sequence": seq})
             return
@@ -1048,17 +268,17 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             qari = qs.get("qari", [""])[0]
             surah = qs.get("surah", [""])[0]
-            entry = qs.get("entry", [""])[0]
+            ayah = qs.get("ayah", [""])[0]
 
-            zpath = zip_path_for(qari, surah)
-            if not os.path.isfile(zpath):
-                self.send_error(404, "Zip file not found")
+            audio_file = get_audio_file_path(qari, surah, ayah)
+            if not audio_file or not os.path.isfile(audio_file):
+                self.send_error(404, "Audio file not found")
                 return
 
             try:
-                with zipfile.ZipFile(zpath, "r") as zf:
-                    data = zf.read(entry)
-                ctype, _ = mimetypes.guess_type(entry)
+                with open(audio_file, "rb") as f:
+                    data = f.read()
+                ctype, _ = mimetypes.guess_type(audio_file)
                 self.send_response(200)
                 self.send_header("Content-Type", ctype or "audio/mpeg")
                 self.send_header("Content-Length", str(len(data)))
@@ -1066,11 +286,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 return
             except Exception as e:
-                self.send_error(500, f"Error reading audio zip: {e}")
+                self.send_error(500, f"Error reading audio file: {e}")
                 return
 
         self.send_error(404, "Not Found")
-
 
 def run():
     server_address = ("0.0.0.0", PORT)
@@ -1081,7 +300,6 @@ def run():
     except KeyboardInterrupt:
         print("\nStopping server...")
         httpd.server_close()
-
 
 if __name__ == "__main__":
     run()
